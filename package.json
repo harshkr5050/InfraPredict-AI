@@ -1,9 +1,17 @@
 {
   "name": "infrapredict-ai-fullstack",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "description": "Full-stack predictive maintenance and public infrastructure platform",
   "main": "server.js",
-  "scripts": {"start":"node server.js","dev":"node --watch server.js"},
-  "engines": {"node": ">=22"}
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
 }
