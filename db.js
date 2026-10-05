@@ -5,9 +5,7 @@ let sqlClient = null;
 let initPromise = null;
 
 function sql() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is not configured');
-  }
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not configured');
   if (!sqlClient) sqlClient = neon(process.env.DATABASE_URL);
   return sqlClient;
 }
@@ -32,6 +30,7 @@ async function initDb() {
   if (initPromise) return initPromise;
   initPromise = (async () => {
     const q = sql();
+
     await q`CREATE TABLE IF NOT EXISTS users (
       id BIGSERIAL PRIMARY KEY,
       name TEXT NOT NULL,
@@ -41,6 +40,7 @@ async function initDb() {
       role TEXT NOT NULL DEFAULT 'citizen' CHECK(role IN ('citizen','admin')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
+
     await q`CREATE TABLE IF NOT EXISTS complaints (
       id BIGSERIAL PRIMARY KEY,
       request_id TEXT NOT NULL UNIQUE,
@@ -57,27 +57,35 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
+
     await q`CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       expires_at BIGINT NOT NULL
     )`;
+
     await q`CREATE INDEX IF NOT EXISTS idx_complaints_user ON complaints(user_id)`;
     await q`CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status)`;
     await q`CREATE INDEX IF NOT EXISTS idx_complaints_department ON complaints(department)`;
 
-    const demo = await q`SELECT id FROM users WHERE mobile='9876543210' LIMIT 1`;
-    if (!demo.length) {
-      await q`INSERT INTO users(name,mobile,email,password_hash,role)
-              VALUES('Demo Citizen','9876543210','demo@example.com',${hashPassword('1234')},'citizen')`;
-    }
+    await q`INSERT INTO users(name,mobile,email,password_hash,role)
+            VALUES('Demo Citizen','9876543210','demo@example.com',${hashPassword('1234')},'citizen')
+            ON CONFLICT (mobile) DO NOTHING`;
 
-    const admin = await q`SELECT id FROM users WHERE role='admin' LIMIT 1`;
-    if (!admin.length) {
-      const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-      const adminPassword = process.env.ADMIN_PASSWORD || 'change-me-before-deploy';
+    const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+    const adminPassword = process.env.ADMIN_PASSWORD || 'change-me-before-deploy';
+    const adminEmail = `${adminUsername}@infrapredict.local`;
+    const adminHash = hashPassword(adminPassword);
+
+    const adminRows = await q`SELECT id FROM users WHERE role='admin' LIMIT 1`;
+    if (!adminRows.length) {
       await q`INSERT INTO users(name,mobile,email,password_hash,role)
-              VALUES('Administrator','0000000000',${`${adminUsername}@infrapredict.local`},${hashPassword(adminPassword)},'admin')`;
+              VALUES('Administrator','0000000000',${adminEmail},${adminHash},'admin')
+              ON CONFLICT (mobile) DO UPDATE SET
+                name='Administrator', email=${adminEmail}, password_hash=${adminHash}, role='admin'`;
+    } else {
+      await q`UPDATE users SET email=${adminEmail},password_hash=${adminHash},name='Administrator'
+              WHERE id=${adminRows[0].id}`;
     }
   })().catch(err => {
     initPromise = null;
