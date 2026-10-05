@@ -2,7 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { sql, initDb, hashPassword, verifyPassword } = require('./db');
+const { sql, initDb, hashPassword, verifyPassword, getDatabaseUrl } = require('./db');
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, '.env');
@@ -115,14 +115,25 @@ function serveStatic(req, res) {
 
 async function handler(req, res) {
   try {
-    if (!process.env.DATABASE_URL) {
-      return json(res, 503, { message: 'Database is not configured. Add DATABASE_URL in Vercel Environment Variables.' });
+    const url = new URL(req.url, 'http://localhost');
+    const pathname = url.pathname;
+
+    if (!pathname.startsWith('/api/')) {
+      if (serveStatic(req, res)) return;
+      const index = fs.readFileSync(path.join(publicDir, 'index.html'));
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': index.length });
+      return res.end(index);
+    }
+
+    if (!getDatabaseUrl()) {
+      return json(res, 503, {
+        message: 'Database is not configured',
+        setup: 'Add DATABASE_URL or POSTGRES_URL in Vercel Environment Variables and redeploy.'
+      });
     }
 
     await initDb();
     const q = sql();
-    const url = new URL(req.url, 'http://localhost');
-    const pathname = url.pathname;
 
     if (pathname === '/api/health' && req.method === 'GET') {
       return json(res, 200, { ok: true, service: 'InfraPredict AI API', database: 'postgresql' });
@@ -163,7 +174,7 @@ async function handler(req, res) {
     }
 
     const user = await currentUser(req);
-    if (pathname.startsWith('/api/') && !user) return json(res, 401, { message: 'Authentication required' });
+    if (!user) return json(res, 401, { message: 'Authentication required' });
     if (pathname === '/api/me' && req.method === 'GET') return json(res, 200, { user: safeUser(user) });
 
     if (pathname === '/api/complaints' && req.method === 'GET') {
@@ -248,14 +259,10 @@ async function handler(req, res) {
       return json(res, 200, { byInfra, bySeverity, priority });
     }
 
-    if (pathname.startsWith('/api/')) return json(res, 404, { message: 'API route not found' });
-    if (serveStatic(req, res)) return;
-    const index = fs.readFileSync(path.join(publicDir, 'index.html'));
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': index.length });
-    res.end(index);
+    return json(res, 404, { message: 'API route not found' });
   } catch (e) {
     console.error(e);
-    if (!res.headersSent) json(res, 500, { message: 'Server error', detail: process.env.NODE_ENV === 'development' ? e.message : undefined });
+    if (!res.headersSent) json(res, 500, { message: 'Server error' });
     else res.end();
   }
 }
