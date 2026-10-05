@@ -4,9 +4,14 @@ const { neon } = require('@neondatabase/serverless');
 let sqlClient = null;
 let initPromise = null;
 
+function getDatabaseUrl() {
+  return process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_URL_NON_POOLING || '';
+}
+
 function sql() {
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not configured');
-  if (!sqlClient) sqlClient = neon(process.env.DATABASE_URL);
+  const databaseUrl = getDatabaseUrl();
+  if (!databaseUrl) throw new Error('No Postgres connection string is configured');
+  if (!sqlClient) sqlClient = neon(databaseUrl);
   return sqlClient;
 }
 
@@ -94,4 +99,4 @@ async function initDb() {
   return initPromise;
 }
 
-module.exports = { sql, initDb, hashPassword, verifyPassword };
+module.exports = { sql, initDb, hashPassword, verifyPassword, getDatabaseUrl };
