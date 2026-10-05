@@ -71,8 +71,8 @@ async function initDb() {
       { upsert: true }
     );
 
-    const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-    const adminPassword = process.env.ADMIN_PASSWORD || 'change-me-before-deploy';
+    const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim();
+    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
     const adminEmail = `${adminUsername}@infrapredict.local`;
     const existingAdmin = await users.findOne({ role: 'admin' });
     const adminData = {
@@ -82,6 +82,7 @@ async function initDb() {
       password_hash: hashPassword(adminPassword),
       role: 'admin'
     };
+
     if (existingAdmin) {
       await users.updateOne({ _id: existingAdmin._id }, { $set: adminData });
     } else {
