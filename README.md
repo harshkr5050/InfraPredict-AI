@@ -1,72 +1,71 @@
 # InfraPredict AI — Full Stack
 
-This project uses the supplied `admin.html` as the UI/feature reference and upgrades it into a real full-stack predictive-maintenance platform.
+InfraPredict AI is a full-stack public infrastructure reporting and predictive-maintenance demo with Citizen and Admin/Authority portals.
 
-## What is included
-- Responsive Citizen + Admin/Authority website
-- Citizen registration and secure login
+## Included
+- Responsive Citizen + Admin website
+- Citizen registration and login
 - Admin login
-- Password hashing using Node's built-in `crypto.scrypt`
+- Password hashing with Node `crypto.scrypt`
 - Server-side session tokens
-- Persistent SQLite database
+- Neon PostgreSQL database
 - GPS-based infrastructure reports
 - Road, bridge, streetlight, water pipeline, drainage and public-building categories
 - Automatic department routing
 - Risk scoring: Critical 95, High 80, Medium 55, Low 25
-- Citizen dashboard and personal complaint tracking
-- Admin dashboard with global counts
-- Search, status and department filters
-- Admin status updates: Pending / In Progress / Resolved
-- Admin deletion of invalid requests
-- Analytics without external chart libraries
-- Risk-ranked predictive maintenance priority queue
-- Works without `npm install` or internet once Node.js is installed
+- Citizen dashboard and complaint tracking
+- Admin dashboard, filters and status updates
+- Analytics and risk-ranked maintenance priority queue
 
-## Requirements
-Install **Node.js 22 or newer**.
+## Runtime
+- Node.js 24
+- `@neondatabase/serverless`
+- PostgreSQL / Neon
 
-## Fastest way to run on Windows
-1. Extract the ZIP.
-2. Open the `infrapredict-fullstack` folder.
-3. Double-click `run.bat`.
-4. The browser opens at `http://localhost:3000`.
+## Environment variables
+Create `.env` locally or add these in Vercel Project Settings → Environment Variables:
 
-## Manual run
-```bash
-node server.js
+```env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me-before-deploy
 ```
-Then open `http://localhost:3000`.
 
-## Demo accounts
-**Citizen**
+Do not commit a real `.env` file.
+
+## Vercel deployment
+1. Import this GitHub repository into Vercel.
+2. In Vercel Marketplace install **Neon** for the project, or connect an existing Neon PostgreSQL database.
+3. Make sure Vercel has a `DATABASE_URL` environment variable for Production (and Preview if required).
+4. Add `ADMIN_USERNAME` and `ADMIN_PASSWORD` in Vercel Environment Variables.
+5. Redeploy the project.
+
+The app creates its tables automatically on first request and seeds the demo citizen and admin account.
+
+## Local run
+Install dependencies:
+
+```bash
+npm install
+```
+
+Create `.env` from `.env.example` and place your Neon `DATABASE_URL` in it. Then run:
+
+```bash
+npm start
+```
+
+Open `http://localhost:3000`.
+
+## Demo citizen
 - Mobile: `9876543210`
 - Password: `1234`
 
-**Admin**
-- Username: `admin`
-- Password: `change-me-before-deploy`
+## Admin
+- Username comes from `ADMIN_USERNAME`
+- Password comes from `ADMIN_PASSWORD`
 
-Change the admin credentials before a real deployment. Copy `.env.example` to `.env` and edit:
-
-```env
-PORT=3000
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-```
-
-> Admin credentials are seeded when the database is first created. If you change them after first run, delete `data/infrapredict.db` and restart during development, or update the admin record properly for production.
-
-## Database
-The app automatically creates:
-
-`data/infrapredict.db`
-
-Tables:
-- `users`
-- `complaints`
-- `sessions`
-
-## Main API routes
+## API routes
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 - `GET /api/me`
@@ -78,18 +77,19 @@ Tables:
 - `GET /api/analytics`
 - `GET /api/health`
 
-## Project structure
+## Structure
 ```text
-infrapredict-fullstack/
+InfraPredict-AI/
 ├── public/
 │   └── index.html
 ├── db.js
 ├── server.js
+├── server.ts
 ├── package.json
-├── run.bat
 ├── .env.example
+├── .gitignore
+├── run.bat
 └── README.md
 ```
 
-## Deployment
-This version is excellent for a hackathon demo, local server, Render/Railway/Fly.io/VPS with persistent storage. For a multi-instance production deployment, move the SQLite data layer to a hosted PostgreSQL database such as Neon or Supabase.
+`server.ts` is the Vercel zero-config Node entrypoint. `server.js` is also kept for local Windows/Node execution.
