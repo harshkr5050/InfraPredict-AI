@@ -1,98 +1,95 @@
-# InfraPredict AI
+# InfraPredict AI — Full Stack
 
-Smart Public Infrastructure Platform for citizen infrastructure reporting, GPS-based complaint capture, risk prioritization and authority-side request management.
+This project uses the supplied `admin.html` as the UI/feature reference and upgrades it into a real full-stack predictive-maintenance platform.
 
-## Tech Stack
-- Frontend: HTML, CSS, JavaScript
-- Backend: Node.js, Express.js
-- Database: MySQL
-- Authentication: JWT + bcrypt password hashing
-- Location: Browser Geolocation API
-
-## Features
-- Citizen registration and login
+## What is included
+- Responsive Citizen + Admin/Authority website
+- Citizen registration and secure login
 - Admin login
-- Complaint submission
-- Current GPS latitude/longitude
-- Infrastructure and severity selection
-- Automatic department mapping
-- Rule-based risk score
-- Citizen complaint tracking
-- Admin request management
-- Search/filter-ready API
-- Status workflow: Pending → In Progress → Resolved
-- Admin analytics API
+- Password hashing using Node's built-in `crypto.scrypt`
+- Server-side session tokens
+- Persistent SQLite database
+- GPS-based infrastructure reports
+- Road, bridge, streetlight, water pipeline, drainage and public-building categories
+- Automatic department routing
+- Risk scoring: Critical 95, High 80, Medium 55, Low 25
+- Citizen dashboard and personal complaint tracking
+- Admin dashboard with global counts
+- Search, status and department filters
+- Admin status updates: Pending / In Progress / Resolved
+- Admin deletion of invalid requests
+- Analytics without external chart libraries
+- Risk-ranked predictive maintenance priority queue
+- Works without `npm install` or internet once Node.js is installed
 
-## 1. Requirements
-Install Node.js and MySQL.
+## Requirements
+Install **Node.js 22 or newer**.
 
-## 2. Database setup
-Open MySQL Workbench or MySQL command line and run:
+## Fastest way to run on Windows
+1. Extract the ZIP.
+2. Open the `infrapredict-fullstack` folder.
+3. Double-click `run.bat`.
+4. The browser opens at `http://localhost:3000`.
 
-`database/infrapredict.sql`
+## Manual run
+```bash
+node server.js
+```
+Then open `http://localhost:3000`.
 
-This creates the `infrapredict` database and tables.
+## Demo accounts
+**Citizen**
+- Mobile: `9876543210`
+- Password: `1234`
 
-## 3. Configure backend
-Open `backend` and copy `.env.example` to `.env`.
+**Admin**
+- Username: `admin`
+- Password: `change-me-before-deploy`
 
-Set your MySQL password in `.env`.
-
-Example:
+Change the admin credentials before a real deployment. Copy `.env.example` to `.env` and edit:
 
 ```env
-PORT=5000
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=your_mysql_password
-DB_NAME=infrapredict
-JWT_SECRET=use_a_long_random_secret_here
+PORT=3000
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
 ```
 
-## 4. Install and seed admin
+> Admin credentials are seeded when the database is first created. If you change them after first run, delete `data/infrapredict.db` and restart during development, or update the admin record properly for production.
 
-```bash
-cd backend
-npm install
-npm run seed
-npm start
-```
+## Database
+The app automatically creates:
 
-Admin demo:
-- Username: `admin`
-- Password: `admin123`
+`data/infrapredict.db`
 
-## 5. Open the project
+Tables:
+- `users`
+- `complaints`
+- `sessions`
 
-Visit:
-
-`http://localhost:5000`
-
-The Express server serves the frontend and API from the same project.
-
-## API overview
+## Main API routes
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `GET /api/me`
+- `GET /api/dashboard`
+- `GET /api/complaints`
 - `POST /api/complaints`
-- `GET /api/complaints/my`
-- `GET /api/admin/requests`
-- `PUT /api/admin/requests/:id/status`
-- `DELETE /api/admin/requests/:id`
-- `GET /api/admin/analytics`
+- `PATCH /api/complaints/:requestId/status`
+- `DELETE /api/complaints/:requestId`
+- `GET /api/analytics`
 - `GET /api/health`
 
-## GitHub
-Do NOT upload `.env` or `node_modules`.
-
-```bash
-git init
-git add .
-git commit -m "Initial InfraPredict AI full-stack project"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/InfraPredict-AI.git
-git push -u origin main
+## Project structure
+```text
+infrapredict-fullstack/
+├── public/
+│   └── index.html
+├── db.js
+├── server.js
+├── package.json
+├── run.bat
+├── .env.example
+└── README.md
 ```
 
-## Important
-This is a hackathon/demo application. For production deployment, use HTTPS, stronger secret management, rate limiting, audit logs, secure CORS, database backups, OTP/email verification and a production hosting environment.
+## Deployment
+This version is excellent for a hackathon demo, local server, Render/Railway/Fly.io/VPS with persistent storage. For a multi-instance production deployment, move the SQLite data layer to a hosted PostgreSQL database such as Neon or Supabase.
