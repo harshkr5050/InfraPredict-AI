@@ -1,18 +1,26 @@
 const crypto = require('node:crypto');
-const { neon } = require('@neondatabase/serverless');
+const { MongoClient } = require('mongodb');
 
-let sqlClient = null;
-let initPromise = null;
+let clientPromise;
+let initPromise;
 
-function getDatabaseUrl() {
-  return process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_URL_NON_POOLING || '';
+function getMongoUri() {
+  return process.env.MONGODB_URI || process.env.MONGO_URL || '';
 }
 
-function sql() {
-  const databaseUrl = getDatabaseUrl();
-  if (!databaseUrl) throw new Error('No Postgres connection string is configured');
-  if (!sqlClient) sqlClient = neon(databaseUrl);
-  return sqlClient;
+function getDbName() {
+  return process.env.MONGODB_DB || 'infrapredict';
+}
+
+async function getDb() {
+  const uri = getMongoUri();
+  if (!uri) throw new Error('MONGODB_URI is not configured');
+  if (!clientPromise) {
+    const client = new MongoClient(uri, { serverSelectionTimeoutMS: 10000 });
+    clientPromise = client.connect();
+  }
+  const client = await clientPromise;
+  return client.db(getDbName());
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -34,63 +42,54 @@ function verifyPassword(password, stored) {
 async function initDb() {
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const q = sql();
+    const db = await getDb();
+    const users = db.collection('users');
+    const complaints = db.collection('complaints');
+    const sessions = db.collection('sessions');
 
-    await q`CREATE TABLE IF NOT EXISTS users (
-      id BIGSERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      mobile TEXT NOT NULL UNIQUE,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'citizen' CHECK(role IN ('citizen','admin')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`;
+    await Promise.all([
+      users.createIndex({ mobile: 1 }, { unique: true }),
+      users.createIndex({ email: 1 }, { unique: true }),
+      complaints.createIndex({ request_id: 1 }, { unique: true }),
+      complaints.createIndex({ user_id: 1 }),
+      complaints.createIndex({ status: 1 }),
+      complaints.createIndex({ department: 1 }),
+      sessions.createIndex({ token: 1 }, { unique: true }),
+      sessions.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 })
+    ]);
 
-    await q`CREATE TABLE IF NOT EXISTS complaints (
-      id BIGSERIAL PRIMARY KEY,
-      request_id TEXT NOT NULL UNIQUE,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      infrastructure TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      location TEXT NOT NULL,
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      description TEXT,
-      department TEXT NOT NULL,
-      risk INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'Pending' CHECK(status IN ('Pending','In Progress','Resolved')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`;
-
-    await q`CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at BIGINT NOT NULL
-    )`;
-
-    await q`CREATE INDEX IF NOT EXISTS idx_complaints_user ON complaints(user_id)`;
-    await q`CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status)`;
-    await q`CREATE INDEX IF NOT EXISTS idx_complaints_department ON complaints(department)`;
-
-    await q`INSERT INTO users(name,mobile,email,password_hash,role)
-            VALUES('Demo Citizen','9876543210','demo@example.com',${hashPassword('1234')},'citizen')
-            ON CONFLICT (mobile) DO NOTHING`;
+    await users.updateOne(
+      { mobile: '9876543210' },
+      { $setOnInsert: {
+        name: 'Demo Citizen',
+        mobile: '9876543210',
+        email: 'demo@example.com',
+        password_hash: hashPassword('1234'),
+        role: 'citizen',
+        created_at: new Date()
+      } },
+      { upsert: true }
+    );
 
     const adminUsername = process.env.ADMIN_USERNAME || 'admin';
     const adminPassword = process.env.ADMIN_PASSWORD || 'change-me-before-deploy';
     const adminEmail = `${adminUsername}@infrapredict.local`;
-    const adminHash = hashPassword(adminPassword);
-
-    const adminRows = await q`SELECT id FROM users WHERE role='admin' LIMIT 1`;
-    if (!adminRows.length) {
-      await q`INSERT INTO users(name,mobile,email,password_hash,role)
-              VALUES('Administrator','0000000000',${adminEmail},${adminHash},'admin')
-              ON CONFLICT (mobile) DO UPDATE SET
-                name='Administrator', email=${adminEmail}, password_hash=${adminHash}, role='admin'`;
+    const existingAdmin = await users.findOne({ role: 'admin' });
+    const adminData = {
+      name: 'Administrator',
+      mobile: '0000000000',
+      email: adminEmail,
+      password_hash: hashPassword(adminPassword),
+      role: 'admin'
+    };
+    if (existingAdmin) {
+      await users.updateOne({ _id: existingAdmin._id }, { $set: adminData });
     } else {
-      await q`UPDATE users SET email=${adminEmail},password_hash=${adminHash},name='Administrator'
-              WHERE id=${adminRows[0].id}`;
+      await users.updateOne(
+        { mobile: '0000000000' },
+        { $set: adminData, $setOnInsert: { created_at: new Date() } },
+        { upsert: true }
+      );
     }
   })().catch(err => {
     initPromise = null;
@@ -99,4 +98,4 @@ async function initDb() {
   return initPromise;
 }
 
-module.exports = { sql, initDb, hashPassword, verifyPassword, getDatabaseUrl };
+module.exports = { getDb, initDb, hashPassword, verifyPassword, getMongoUri };
