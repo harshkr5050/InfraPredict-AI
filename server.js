@@ -2,7 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { sql, initDb, hashPassword, verifyPassword, getDatabaseUrl } = require('./db');
+const { getDb, initDb, hashPassword, verifyPassword, getMongoUri } = require('./db');
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, '.env');
@@ -50,32 +50,25 @@ function parseBody(req) {
 }
 
 async function tokenFor(userId) {
-  const q = sql();
+  const db = await getDb();
   const token = crypto.randomBytes(32).toString('hex');
-  const expires = Date.now() + 12 * 60 * 60 * 1000;
-  await q`DELETE FROM sessions WHERE expires_at < ${Date.now()}`;
-  await q`INSERT INTO sessions(token,user_id,expires_at) VALUES(${token},${userId},${expires})`;
+  const expires = new Date(Date.now() + 12 * 60 * 60 * 1000);
+  await db.collection('sessions').insertOne({ token, user_id: userId, expires_at: expires });
   return token;
 }
 
 async function currentUser(req) {
-  const q = sql();
+  const db = await getDb();
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
-  const rows = await q`SELECT u.id,u.name,u.mobile,u.email,u.role,s.expires_at
-                       FROM sessions s JOIN users u ON u.id=s.user_id
-                       WHERE s.token=${token} LIMIT 1`;
-  const row = rows[0];
-  if (!row || Number(row.expires_at) < Date.now()) {
-    if (row) await q`DELETE FROM sessions WHERE token=${token}`;
-    return null;
-  }
-  return row;
+  const session = await db.collection('sessions').findOne({ token, expires_at: { $gt: new Date() } });
+  if (!session) return null;
+  return db.collection('users').findOne({ _id: session.user_id }, { projection: { password_hash: 0 } });
 }
 
 function safeUser(u) {
-  return { id: u.id, name: u.name, mobile: u.mobile, email: u.email, role: u.role };
+  return { id: String(u._id), name: u.name, mobile: u.mobile, email: u.email, role: u.role };
 }
 
 function departmentFor(type) {
@@ -113,6 +106,17 @@ function serveStatic(req, res) {
   return false;
 }
 
+async function complaintListWithUsers(db, filter = {}) {
+  return db.collection('complaints').aggregate([
+    { $match: filter },
+    { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+    { $unwind: '$user' },
+    { $addFields: { citizen: '$user.name', mobile: '$user.mobile', email: '$user.email' } },
+    { $project: { user: 0 } },
+    { $sort: { risk: -1, created_at: -1 } }
+  ]).toArray();
+}
+
 async function handler(req, res) {
   try {
     const url = new URL(req.url, 'http://localhost');
@@ -125,18 +129,19 @@ async function handler(req, res) {
       return res.end(index);
     }
 
-    if (!getDatabaseUrl()) {
+    if (!getMongoUri()) {
       return json(res, 503, {
         message: 'Database is not configured',
-        setup: 'Add DATABASE_URL or POSTGRES_URL in Vercel Environment Variables and redeploy.'
+        setup: 'Add MONGODB_URI in Vercel Environment Variables and redeploy.'
       });
     }
 
     await initDb();
-    const q = sql();
+    const db = await getDb();
 
     if (pathname === '/api/health' && req.method === 'GET') {
-      return json(res, 200, { ok: true, service: 'InfraPredict AI API', database: 'postgresql' });
+      await db.command({ ping: 1 });
+      return json(res, 200, { ok: true, service: 'InfraPredict AI API', database: 'mongodb-atlas' });
     }
 
     if (pathname === '/api/auth/register' && req.method === 'POST') {
@@ -144,14 +149,16 @@ async function handler(req, res) {
       if (!name || !mobile || !email || !password) return json(res, 400, { message: 'Please fill all fields' });
       if (!/^\d{10}$/.test(String(mobile))) return json(res, 400, { message: 'Enter a valid 10 digit mobile number' });
       if (String(password).length < 4) return json(res, 400, { message: 'Password must contain at least 4 characters' });
+      const user = {
+        name: String(name).trim(), mobile: String(mobile), email: String(email).trim().toLowerCase(),
+        password_hash: hashPassword(String(password)), role: 'citizen', created_at: new Date()
+      };
       try {
-        const rows = await q`INSERT INTO users(name,mobile,email,password_hash,role)
-                             VALUES(${String(name).trim()},${String(mobile)},${String(email).trim().toLowerCase()},${hashPassword(String(password))},'citizen')
-                             RETURNING *`;
-        const user = rows[0];
-        return json(res, 201, { message: 'Registration successful', token: await tokenFor(user.id), user: safeUser(user) });
+        const result = await db.collection('users').insertOne(user);
+        user._id = result.insertedId;
+        return json(res, 201, { message: 'Registration successful', token: await tokenFor(user._id), user: safeUser(user) });
       } catch (e) {
-        if (String(e.message).toLowerCase().includes('unique')) return json(res, 409, { message: 'Mobile number or email is already registered' });
+        if (e && e.code === 11000) return json(res, 409, { message: 'Mobile number or email is already registered' });
         throw e;
       }
     }
@@ -159,18 +166,17 @@ async function handler(req, res) {
     if (pathname === '/api/auth/login' && req.method === 'POST') {
       const { loginId, password, role } = await parseBody(req);
       if (!loginId || !password) return json(res, 400, { message: 'Enter login ID and password' });
-      let rows;
+      let user;
       if (role === 'admin') {
         const adminUsername = (process.env.ADMIN_USERNAME || 'admin').toLowerCase();
         if (String(loginId).trim().toLowerCase() !== adminUsername) return json(res, 401, { message: 'Invalid admin username or password' });
-        rows = await q`SELECT * FROM users WHERE role='admin' LIMIT 1`;
+        user = await db.collection('users').findOne({ role: 'admin' });
       } else {
         const id = String(loginId).trim();
-        rows = await q`SELECT * FROM users WHERE role='citizen' AND (lower(email)=lower(${id}) OR mobile=${id}) LIMIT 1`;
+        user = await db.collection('users').findOne({ role: 'citizen', $or: [{ email: id.toLowerCase() }, { mobile: id }] });
       }
-      const user = rows[0];
       if (!user || !verifyPassword(String(password), user.password_hash)) return json(res, 401, { message: 'Invalid login details' });
-      return json(res, 200, { token: await tokenFor(user.id), user: safeUser(user) });
+      return json(res, 200, { token: await tokenFor(user._id), user: safeUser(user) });
     }
 
     const user = await currentUser(req);
@@ -178,11 +184,11 @@ async function handler(req, res) {
     if (pathname === '/api/me' && req.method === 'GET') return json(res, 200, { user: safeUser(user) });
 
     if (pathname === '/api/complaints' && req.method === 'GET') {
-      let rows;
+      let rows = user.role === 'admin'
+        ? await complaintListWithUsers(db)
+        : await complaintListWithUsers(db, { user_id: user._id });
+
       if (user.role === 'admin') {
-        rows = await q`SELECT c.*,u.name AS citizen,u.mobile,u.email
-                       FROM complaints c JOIN users u ON u.id=c.user_id
-                       ORDER BY c.risk DESC,c.id DESC`;
         const status = url.searchParams.get('status') || 'All';
         const department = url.searchParams.get('department') || 'All';
         const search = (url.searchParams.get('search') || '').toLowerCase();
@@ -191,10 +197,6 @@ async function handler(req, res) {
           (department === 'All' || c.department === department) &&
           (!search || String(c.request_id).toLowerCase().includes(search) || String(c.citizen).toLowerCase().includes(search) || String(c.mobile).includes(search))
         );
-      } else {
-        rows = await q`SELECT c.*,u.name AS citizen,u.mobile,u.email
-                       FROM complaints c JOIN users u ON u.id=c.user_id
-                       WHERE c.user_id=${user.id} ORDER BY c.id DESC`;
       }
       return json(res, 200, { complaints: rows });
     }
@@ -205,11 +207,17 @@ async function handler(req, res) {
       const allowed = ['Road', 'Bridge', 'Streetlight', 'Water Pipeline', 'Drainage', 'Public Building'];
       const levels = ['Critical', 'High', 'Medium', 'Low'];
       if (!allowed.includes(infrastructure) || !levels.includes(severity) || !location) return json(res, 400, { message: 'Infrastructure type, severity and location are required' });
-      const requestId = `REQ-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
-      const rows = await q`INSERT INTO complaints(request_id,user_id,infrastructure,severity,location,latitude,longitude,description,department,risk,status)
-                           VALUES(${requestId},${user.id},${infrastructure},${severity},${String(location)},${latitude ?? null},${longitude ?? null},${String(description).trim()},${departmentFor(infrastructure)},${riskFor(severity)},'Pending')
-                           RETURNING *`;
-      return json(res, 201, { message: 'Request submitted successfully', complaint: rows[0] });
+      const complaint = {
+        request_id: `REQ-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`,
+        user_id: user._id,
+        infrastructure, severity, location: String(location),
+        latitude: latitude ?? null, longitude: longitude ?? null,
+        description: String(description).trim(), department: departmentFor(infrastructure),
+        risk: riskFor(severity), status: 'Pending', created_at: new Date(), updated_at: new Date()
+      };
+      const result = await db.collection('complaints').insertOne(complaint);
+      complaint._id = result.insertedId;
+      return json(res, 201, { message: 'Request submitted successfully', complaint });
     }
 
     const statusMatch = pathname.match(/^\/api\/complaints\/([^/]+)\/status$/);
@@ -218,44 +226,46 @@ async function handler(req, res) {
       const { status } = await parseBody(req);
       if (!['Pending', 'In Progress', 'Resolved'].includes(status)) return json(res, 400, { message: 'Invalid status' });
       const id = decodeURIComponent(statusMatch[1]);
-      const rows = await q`UPDATE complaints SET status=${status},updated_at=NOW() WHERE request_id=${id} RETURNING request_id`;
-      return rows.length ? json(res, 200, { message: 'Status updated' }) : json(res, 404, { message: 'Request not found' });
+      const result = await db.collection('complaints').updateOne({ request_id: id }, { $set: { status, updated_at: new Date() } });
+      return result.matchedCount ? json(res, 200, { message: 'Status updated' }) : json(res, 404, { message: 'Request not found' });
     }
 
     const deleteMatch = pathname.match(/^\/api\/complaints\/([^/]+)$/);
     if (deleteMatch && req.method === 'DELETE') {
       if (user.role !== 'admin') return json(res, 403, { message: 'Admin access required' });
       const id = decodeURIComponent(deleteMatch[1]);
-      const rows = await q`DELETE FROM complaints WHERE request_id=${id} RETURNING request_id`;
-      return rows.length ? json(res, 200, { message: 'Request deleted' }) : json(res, 404, { message: 'Request not found' });
+      const result = await db.collection('complaints').deleteOne({ request_id: id });
+      return result.deletedCount ? json(res, 200, { message: 'Request deleted' }) : json(res, 404, { message: 'Request not found' });
     }
 
     if (pathname === '/api/dashboard' && req.method === 'GET') {
-      let rows;
-      if (user.role === 'admin') {
-        rows = await q`SELECT COUNT(*)::int AS total,
-                       COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
-                       COUNT(*) FILTER (WHERE status='In Progress')::int AS progress,
-                       COUNT(*) FILTER (WHERE status='Resolved')::int AS resolved,
-                       COUNT(*) FILTER (WHERE severity='Critical')::int AS critical FROM complaints`;
-      } else {
-        rows = await q`SELECT COUNT(*)::int AS total,
-                       COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
-                       COUNT(*) FILTER (WHERE status='In Progress')::int AS progress,
-                       COUNT(*) FILTER (WHERE status='Resolved')::int AS resolved,
-                       COUNT(*) FILTER (WHERE severity='Critical')::int AS critical FROM complaints WHERE user_id=${user.id}`;
-      }
-      const row = rows[0] || {};
-      return json(res, 200, { stats: { total: row.total || 0, pending: row.pending || 0, progress: row.progress || 0, resolved: row.resolved || 0, critical: row.critical || 0 } });
+      const base = user.role === 'admin' ? {} : { user_id: user._id };
+      const [total, pending, progress, resolved, critical] = await Promise.all([
+        db.collection('complaints').countDocuments(base),
+        db.collection('complaints').countDocuments({ ...base, status: 'Pending' }),
+        db.collection('complaints').countDocuments({ ...base, status: 'In Progress' }),
+        db.collection('complaints').countDocuments({ ...base, status: 'Resolved' }),
+        db.collection('complaints').countDocuments({ ...base, severity: 'Critical' })
+      ]);
+      return json(res, 200, { stats: { total, pending, progress, resolved, critical } });
     }
 
     if (pathname === '/api/analytics' && req.method === 'GET') {
       if (user.role !== 'admin') return json(res, 403, { message: 'Admin access required' });
-      const byInfra = await q`SELECT infrastructure AS label,COUNT(*)::int AS value FROM complaints GROUP BY infrastructure ORDER BY value DESC`;
-      const bySeverity = await q`SELECT severity AS label,COUNT(*)::int AS value FROM complaints GROUP BY severity ORDER BY value DESC`;
-      const priority = await q`SELECT c.request_id,c.infrastructure,c.severity,c.risk,c.status,c.department,u.name AS citizen
-                               FROM complaints c JOIN users u ON u.id=c.user_id
-                               ORDER BY CASE WHEN c.status='Resolved' THEN 1 ELSE 0 END,c.risk DESC,c.id ASC LIMIT 8`;
+      const [byInfraRaw, bySeverityRaw, priority] = await Promise.all([
+        db.collection('complaints').aggregate([{ $group: { _id: '$infrastructure', value: { $sum: 1 } } }, { $sort: { value: -1 } }]).toArray(),
+        db.collection('complaints').aggregate([{ $group: { _id: '$severity', value: { $sum: 1 } } }, { $sort: { value: -1 } }]).toArray(),
+        db.collection('complaints').aggregate([
+          { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },
+          { $unwind: '$user' },
+          { $addFields: { citizen: '$user.name', resolved_sort: { $cond: [{ $eq: ['$status', 'Resolved'] }, 1, 0] } } },
+          { $sort: { resolved_sort: 1, risk: -1, created_at: 1 } },
+          { $limit: 8 },
+          { $project: { request_id: 1, infrastructure: 1, severity: 1, risk: 1, status: 1, department: 1, citizen: 1 } }
+        ]).toArray()
+      ]);
+      const byInfra = byInfraRaw.map(x => ({ label: x._id, value: x.value }));
+      const bySeverity = bySeverityRaw.map(x => ({ label: x._id, value: x.value }));
       return json(res, 200, { byInfra, bySeverity, priority });
     }
 
